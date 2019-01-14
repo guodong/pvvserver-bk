@@ -14,7 +14,7 @@ TRIGGER_PORT = 8888
 # PM for one protocol
 class PM:
     def __init__(self):
-        self.entries = {}  # a map, key: property, value: [{space, related_rule}]
+        self.entries = {}  # a map, key: property, value: {nexthop: space}]
 
     def add_space(self, property, space, related_rule):
         if property not in self.entries:
@@ -22,10 +22,20 @@ class PM:
 
         return self.entries[property]['space'].plus(space)
 
+    def union_space(self, property):
+        areas = []
+        for v in self.entries[property].values():
+            for a in v.areas:
+                areas.append(a)
+
+        return areas
+
     def show(self):
         for property in self.entries:
             print property + ':'
-            print self.entries[property]['space'].areas
+            for nexthop in self.entries[property]:
+                print nexthop + ':'
+                print self.entries[property][nexthop].areas
 
 class Node:
     def __init__(self):
@@ -69,21 +79,23 @@ class Node:
             print('recv: ', len(data), client[0], data)
             if data.split(':')[0] == 'd':  # delete rule, eg: d:1
                 rule_id = data.split(':')[1]
+                rule = self.rules[int(rule_id)]
                 for property in self.pm.entries:
                     entry = self.pm.entries[property]
-                    if entry['rule'] == self.rules[int(rule_id)]:
-                        # entry['space'] = self.gen_bits(336, '0')
-                        s = Space([entry['rule']['space']])
-                        entry['space'].minus(s)
-                        print 123
-                        msg = {
-                            'protocol': 'p1',
-                            'property': property,
-                            # 'action': 'minus',
-                            'space': entry['space'].areas
-                        }
-                        self.flood(json.dumps(msg))
-                        break
+                    for nexthop in entry:
+                        if nexthop == rule['actions']['nexthop']:  # has effect on this property
+                            s = Space([rule['space']])
+                            entry[nexthop].minus(s)
+
+                            msg = {
+                                'protocol': 'p1',
+                                'property': property,
+                                # 'action': 'minus',
+                                'space': self.pm.union_space(property)
+                            }
+                            self.flood(json.dumps(msg))
+                            break
+
                 self.pm.show()
 
     def get_node_by_ip(self, ip):
@@ -109,7 +121,7 @@ class Node:
                     'protocol': msg['protocol'],
                     'property': msg['property'],
                     # 'action': msg['action'],
-                    'space': self.pm.entries[msg['property']]['space'].areas
+                    'space': self.pm.union_space(msg['property'])
                 }
                 self.flood(json.dumps(msg_to_send), client[0])
             print 'endtime: %d' % int(time.time() * 1000000)
@@ -120,13 +132,20 @@ class Node:
                 return node
         return None
 
-    def get_neighbor_ips(self):
-        ips = []
+    def get_neighbors(self):
+        neighbors = []
         for link in self.topo['links']:
             if link['src'] == self.name:
-                ips.append(self.get_node_by_name(link['dst'])['ip'])
+                neighbors.append(self.get_node_by_name(link['dst']))
             elif link['dst'] == self.name:
-                ips.append(self.get_node_by_name(link['src'])['ip'])
+                neighbors.append(self.get_node_by_name(link['src']))
+
+        return neighbors
+
+    def get_neighbor_ips(self):
+        ips = []
+        for n in self.get_neighbors():
+            ips.append(n['ip'])
 
         return ips
 
@@ -215,22 +234,23 @@ class Node:
         return result_space
 
     def init_pm(self, property):
-        self.pm['property'] = {'space': Space(), 'rules': []}
+        data = {}
+        for n in self.get_neighbors():
+            data[n['name']] = Space()
+
+        self.pm.entries[property] = data
 
     def cal_pm(self, protocol, property, space, origin):
+        if property not in self.pm.entries:
+            self.init_pm(property)
         changed = False
         for rule in self.rules:
             if rule['actions']['nexthop'] == origin:
                 rule_space = Space([rule['space']])
-                space.multiply(rule_space) #self.intersect(rule['space'], space)
-                if property not in self.pm.entries:
-                    self.init_pm(property)
-
-                for property in self.pm.entries:
-                    if self.pm.entries[property]['rule'] == rule:
-                        if not self.pm.entries[property]['space'].equal(space):
-                            changed = True
-                            self.pm.entries[property]['space'] = space
+                rule_space.multiply(space)
+                if not self.pm.entries[property][origin].equal(rule_space):
+                    changed = True
+                    self.pm.entries[property][origin] = rule_space
 
                 # if property not in self.pm.entries or forward_space != self.pm.entries[property]['space']:
                 #     changed = True

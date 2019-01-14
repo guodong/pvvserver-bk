@@ -58,6 +58,7 @@ class Space:
 
         self.areas = [x for x in result if x is not None]
 
+    # TODO: unordered areas compare
     def equal(self, space):
         if len(space.areas) != len(self.areas):
             return False
