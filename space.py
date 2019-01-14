@@ -1,4 +1,4 @@
-@staticmethod
+
 
 
 def intersect(space1, space2):
@@ -19,28 +19,51 @@ def intersect(space1, space2):
 
 
 class Space:
-    def __init__(self, area=None):
-        if area is None:
-            self.areas = []
-        else:
-            self.areas = [area]
+    def __init__(self, areas=[]):
+        self.areas = areas
 
-    def plus(self, area):
-        for a in self.areas:
-            if a == area:
+    # returns boolean: space changed or not
+    def plus(self, space):
+        if len(space.areas) == 0:
+            return False
+
+        changed = False
+
+        for sa in space.areas:
+            exist = False
+            for a in self.areas:
+                if a == sa:
+                    exist = True
+                    break
+            if exist == False:
+                self.areas.append(sa)
+                changed = True
+
+        return changed
+
+    def minus(self, space):
+        for sa in space.areas:
+            if sa in self.areas:
+                self.areas.remove(sa)
+            else:
+                # TODO: remove area using algebra
                 return
 
-        self.areas.append(area)
+    def multiply(self, space):
+        result = []
+        for sa in space.areas:
+            for a in self.areas:
+                result.append(intersect(sa, a))
 
-    def minus(self, area):
-        if area in self.areas:
-            self.areas.remove(area)
-        else:
-            # TODO: remove area using algebra
-            return
 
-    def multiply(self, area):
+        self.areas = [x for x in result if x is not None]
+
+    def equal(self, space):
+        if len(space.areas) != len(self.areas):
+            return False
+
         for i in range(len(self.areas)):
-            self.areas[i] = intersect(self.areas[i], area)
+            if space.areas[i] != self.areas[i]:
+                return False
 
-        self.areas.remove(None)
+        return True

@@ -4,7 +4,7 @@ import sys
 import netifaces
 import time
 import threading
-import space
+from space import Space
 
 BUF_SIZE = 4096
 PORT = 9999
@@ -18,15 +18,14 @@ class PM:
 
     def add_space(self, property, space, related_rule):
         if property not in self.entries:
-            self.entries[property] = []
+            self.entries[property] = {'space': Space(), 'rule': related_rule}
 
-        for s in self.entries[property]['spaces']:  # if space already exists
-            if s == space:
-                # TODO: add to related_rules
-                return
+        return self.entries[property]['space'].plus(space)
 
-        self.entries[property].append({'space': space, 'rule': related_rule})
-
+    def show(self):
+        for property in self.entries:
+            print property + ':'
+            print self.entries[property]['space'].areas
 
 class Node:
     def __init__(self):
@@ -58,6 +57,7 @@ class Node:
 
         t.join()
 
+    # server for trigger update
     def trigger_server(self):
         ip_port = ('0.0.0.0', TRIGGER_PORT)
         server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -72,13 +72,19 @@ class Node:
                 for property in self.pm.entries:
                     entry = self.pm.entries[property]
                     if entry['rule'] == self.rules[int(rule_id)]:
-                        entry['space'] = self.gen_bits(336, '0')
+                        # entry['space'] = self.gen_bits(336, '0')
+                        s = Space([entry['rule']['space']])
+                        entry['space'].minus(s)
+                        print 123
                         msg = {
                             'protocol': 'p1',
                             'property': property,
-                            'space': entry['space']
+                            # 'action': 'minus',
+                            'space': entry['space'].areas
                         }
                         self.flood(json.dumps(msg))
+                        break
+                self.pm.show()
 
     def get_node_by_ip(self, ip):
         for node in self.topo['nodes']:
@@ -96,12 +102,14 @@ class Node:
             print 'starttime: %d' % int(time.time() * 1000000)
             print('recv: ', len(data), client[0], data)
             msg = json.loads(data)
-            result, changed = self.cal_pm(msg['protocol'], msg['property'], msg['space'], self.get_node_by_ip(client[0])['name'])
+            space = Space(msg['space'])
+            changed = self.cal_pm(msg['protocol'], msg['property'], space, self.get_node_by_ip(client[0])['name'])
             if changed:
                 msg_to_send = {
                     'protocol': msg['protocol'],
                     'property': msg['property'],
-                    'space': result
+                    # 'action': msg['action'],
+                    'space': self.pm.entries[msg['property']]['space'].areas
                 }
                 self.flood(json.dumps(msg_to_send), client[0])
             print 'endtime: %d' % int(time.time() * 1000000)
@@ -206,20 +214,33 @@ class Node:
 
         return result_space
 
+    def init_pm(self, property):
+        self.pm['property'] = {'space': Space(), 'rules': []}
+
     def cal_pm(self, protocol, property, space, origin):
-        forward_space = None
         changed = False
         for rule in self.rules:
             if rule['actions']['nexthop'] == origin:
-                forward_space = self.intersect(rule['space'], space)
-                if property not in self.pm.entries or forward_space != self.pm.entries[property]['space']:
-                    changed = True
+                rule_space = Space([rule['space']])
+                space.multiply(rule_space) #self.intersect(rule['space'], space)
+                if property not in self.pm.entries:
+                    self.init_pm(property)
+
+                for property in self.pm.entries:
+                    if self.pm.entries[property]['rule'] == rule:
+                        if not self.pm.entries[property]['space'].equal(space):
+                            changed = True
+                            self.pm.entries[property]['space'] = space
+
+                # if property not in self.pm.entries or forward_space != self.pm.entries[property]['space']:
+                #     changed = True
                 # if forward_space is not None:
-                self.pm.entries[property] = {'space': forward_space, 'rule': rule}
+                # changed = self.pm.add_space(property, space, rule)
+                # self.pm.entries[property] = {'space': forward_space, 'rule': rule}
                 break
 
-        print self.pm.entries
-        return forward_space, changed
+        self.pm.show()
+        return changed
 
     def get_space(self, nexthop):
         for rule in self.rules:
@@ -254,7 +275,8 @@ class Node:
         msg = {
             'protocol': 'p1',
             'property': 'reach:5',
-            'space': ''.join(headers)
+            # 'action': 'plus',
+            'space': [''.join(headers)]
         }
         self.flood(json.dumps(msg))
         print 'endtime: %d' % int(time.time() * 1000000)
