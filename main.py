@@ -3,13 +3,35 @@ import json
 import sys
 import netifaces
 import time
+import threading
+import space
 
 BUF_SIZE = 4096
 PORT = 9999
+TRIGGER_PORT = 8888
+
+
+# PM for one protocol
+class PM:
+    def __init__(self):
+        self.entries = {}  # a map, key: property, value: [{space, related_rule}]
+
+    def add_space(self, property, space, related_rule):
+        if property not in self.entries:
+            self.entries[property] = []
+
+        for s in self.entries[property]['spaces']:  # if space already exists
+            if s == space:
+                # TODO: add to related_rules
+                return
+
+        self.entries[property].append({'space': space, 'rule': related_rule})
 
 
 class Node:
     def __init__(self):
+        self.pm = PM()
+
         ifs = netifaces.interfaces()
         self.name = ifs[1].split('-')[0][1:]
         with open('topo.json', 'r') as f:
@@ -23,13 +45,48 @@ class Node:
                     self.build_space()
                     # print self.rules
 
+    def bootstrap(self):
+        threads = []
+        t1 = threading.Thread(target=self.pvv_server)
+        threads.append(t1)
+        t2 = threading.Thread(target=self.trigger_server)
+        threads.append(t2)
+
+        for t in threads:
+            t.setDaemon(True)
+            t.start()
+
+        t.join()
+
+    def trigger_server(self):
+        ip_port = ('0.0.0.0', TRIGGER_PORT)
+        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(ip_port)
+        while True:
+            data, client = server.recvfrom(BUF_SIZE)
+            # print 'starttime: %d' % int(time.time() * 1000000)
+            print('recv: ', len(data), client[0], data)
+            if data.split(':')[0] == 'd':  # delete rule, eg: d:1
+                rule_id = data.split(':')[1]
+                for property in self.pm.entries:
+                    entry = self.pm.entries[property]
+                    if entry['rule'] == self.rules[int(rule_id)]:
+                        entry['space'] = self.gen_bits(336, '0')
+                        msg = {
+                            'protocol': 'p1',
+                            'property': property,
+                            'space': entry['space']
+                        }
+                        self.flood(json.dumps(msg))
+
     def get_node_by_ip(self, ip):
         for node in self.topo['nodes']:
             if node['ip'] == ip:
                 return node
         return None
 
-    def start_server(self):
+    def pvv_server(self):
         ip_port = ('0.0.0.0', PORT)
         server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -39,11 +96,11 @@ class Node:
             print 'starttime: %d' % int(time.time() * 1000000)
             print('recv: ', len(data), client[0], data)
             msg = json.loads(data)
-            result = self.cal_pm(msg['space'], self.get_node_by_ip(client[0])['name'])
-            if result is not None:
+            result, changed = self.cal_pm(msg['protocol'], msg['property'], msg['space'], self.get_node_by_ip(client[0])['name'])
+            if changed:
                 msg_to_send = {
-                    'protocol': 'p1',
-                    'property': 'reachable',
+                    'protocol': msg['protocol'],
+                    'property': msg['property'],
                     'space': result
                 }
                 self.flood(json.dumps(msg_to_send), client[0])
@@ -74,10 +131,11 @@ class Node:
             client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             client.sendto(msg, (neighbor, PORT))
 
-    def gen_bits(self, size):
+    @staticmethod
+    def gen_bits(size, bit='*'):
         bits = ''
         for i in range(0, size):
-            bits += '*'
+            bits += bit
         return bits
 
     # build space bits from rules. eg. nw_src=2,nw_dst=3 => ...**10**...**11**...
@@ -133,6 +191,8 @@ class Node:
 
     @staticmethod
     def intersect(space1, space2):
+        if space1 is None or space2 is None:  # if space is empty
+            return None
         result_space = ''
         for i in range(0, len(space1)):
             if space1[i] == space2[i]:
@@ -146,15 +206,20 @@ class Node:
 
         return result_space
 
-    def cal_pm(self, space, nexthop):
+    def cal_pm(self, protocol, property, space, origin):
         forward_space = None
+        changed = False
         for rule in self.rules:
-            if rule['actions']['nexthop'] == nexthop:
+            if rule['actions']['nexthop'] == origin:
                 forward_space = self.intersect(rule['space'], space)
+                if property not in self.pm.entries or forward_space != self.pm.entries[property]['space']:
+                    changed = True
+                # if forward_space is not None:
+                self.pm.entries[property] = {'space': forward_space, 'rule': rule}
                 break
 
-        print forward_space
-        return forward_space
+        print self.pm.entries
+        return forward_space, changed
 
     def get_space(self, nexthop):
         for rule in self.rules:
@@ -188,7 +253,7 @@ class Node:
         ]
         msg = {
             'protocol': 'p1',
-            'property': 'reachable',
+            'property': 'reach:5',
             'space': ''.join(headers)
         }
         self.flood(json.dumps(msg))
@@ -200,4 +265,4 @@ if __name__ == '__main__':
     if len(sys.argv) > 1:
         node.init()
     else:
-        node.start_server()
+        node.bootstrap()
