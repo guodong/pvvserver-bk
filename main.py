@@ -9,7 +9,8 @@ from space import Space
 BUF_SIZE = 4096
 PORT = 9999
 TRIGGER_PORT = 8888
-
+#TOPO_FILE = 'topo-add-rule.json'
+TOPO_FILE = 'topo.json'
 
 # PM for one protocol
 class PM:
@@ -43,7 +44,7 @@ class Node:
 
         ifs = netifaces.interfaces()
         self.name = ifs[1].split('-')[0][1:]
-        with open('topo.json', 'r') as f:
+        with open(TOPO_FILE, 'r') as f:
             data = f.read()
             topo = json.loads(data)
             self.topo = topo
@@ -75,9 +76,11 @@ class Node:
         server.bind(ip_port)
         while True:
             data, client = server.recvfrom(BUF_SIZE)
-            # print 'starttime: %d' % int(time.time() * 1000000)
+            print 'trigger: %d' % int(time.time() * 1000000)
             print('recv: ', len(data), client[0], data)
-            if data.split(':')[0] == 'd':  # delete rule, eg: d:1
+            data = data.replace('\n', '')  # remove the last \n
+            action = data.split(':')[0]
+            if action == 'd':  # delete rule, eg: d:1
                 rule_id = data.split(':')[1]
                 rule = self.rules[int(rule_id)]
                 for property in self.pm.entries:
@@ -97,6 +100,26 @@ class Node:
                             break
 
                 self.pm.show()
+            elif action == 'a':  # add rule. field:value:nexthop eg: a:nw_dst:00000001000000000000000000000101:s4
+                # construct rule and add to class
+                rule = {
+                    'matches': [{
+                        'field': data.split(':')[1],
+                        'value': data.split(':')[2]
+                    }],
+                    'actions': {
+                        'nexthop': data.split(':')[3]
+                    }
+                }
+                self.build_space_for_rule(rule)
+                self.rules.append(rule)
+
+                # send request to nexthop to get all spaces
+                msg = {
+                    'type': 'request'
+                }
+                self.unicast(json.dumps(msg), self.get_node_by_name(data.split(':')[3])['ip'])
+
 
     def get_node_by_ip(self, ip):
         for node in self.topo['nodes']:
@@ -114,17 +137,26 @@ class Node:
             print 'starttime: %d' % int(time.time() * 1000000)
             print('recv: ', len(data), client[0], data)
             msg = json.loads(data)
-            space = Space(msg['space'])
-            changed = self.cal_pm(msg['protocol'], msg['property'], space, self.get_node_by_ip(client[0])['name'])
-            if changed:
-                msg_to_send = {
-                    'protocol': msg['protocol'],
-                    'property': msg['property'],
-                    # 'action': msg['action'],
-                    'space': self.pm.union_space(msg['property'])
-                }
-                self.flood(json.dumps(msg_to_send), client[0])
-            print 'endtime: %d' % int(time.time() * 1000000)
+            if 'type' in msg and msg['type'] == 'request':
+                for property in self.pm.entries:
+                    msg_to_send = {
+                        'protocol': 'p1', #  TODO: consider different protocol
+                        'property': property,
+                        'space': self.pm.union_space(property)
+                    }
+                    self.unicast(json.dumps(msg_to_send), self.get_node_by_ip(client[0])['ip'])
+            else:
+                space = Space(msg['space'])
+                changed = self.cal_pm(msg['protocol'], msg['property'], space, self.get_node_by_ip(client[0])['name'])
+                if changed:
+                    msg_to_send = {
+                        'protocol': msg['protocol'],
+                        'property': msg['property'],
+                        # 'action': msg['action'],
+                        'space': self.pm.union_space(msg['property'])
+                    }
+                    self.flood(json.dumps(msg_to_send), client[0])
+                print 'endtime: %d' % int(time.time() * 1000000)
 
     def get_node_by_name(self, name):
         for node in self.topo['nodes']:
@@ -149,6 +181,10 @@ class Node:
 
         return ips
 
+    def unicast(self, msg, ip):
+        client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client.sendto(msg, (ip, PORT))
+
     def flood(self, msg, except_ip = None):
         neighbor_ips = self.get_neighbor_ips()
         if except_ip is not None:
@@ -165,8 +201,7 @@ class Node:
             bits += bit
         return bits
 
-    # build space bits from rules. eg. nw_src=2,nw_dst=3 => ...**10**...**11**...
-    def build_space(self):
+    def build_space_for_rule(self, rule):
         header_map = {
             "dl_dst": (0, 48),
             "dl_src": (1, 48),
@@ -188,33 +223,37 @@ class Node:
             "tcp_length": (17, 16),
             "tcp_checksum": (18, 16)
         }
-        for rule in self.rules:
-            headers = [
-                self.gen_bits(48),  # dl_dst
-                self.gen_bits(48),  # dl_src
-                self.gen_bits(16),  # dl_type
-                self.gen_bits(4),  # ip_version
-                self.gen_bits(4),  # ihl
-                self.gen_bits(8),  # diffserv
-                self.gen_bits(16),  # total_length
-                self.gen_bits(16),  # identification
-                self.gen_bits(3),  # flags
-                self.gen_bits(13),  # frag
-                self.gen_bits(8),  # ttl
-                self.gen_bits(8),  # protocol
-                self.gen_bits(16),  # checksum
-                self.gen_bits(32),  # nw_src
-                self.gen_bits(32),  # nw_dst
-                self.gen_bits(16),  # tcp_src
-                self.gen_bits(16),  # tcp_dst
-                self.gen_bits(16),  # tcp_length
-                self.gen_bits(16)  # tcp_checksum
-            ]
-            for match in rule['matches']:
-                index = header_map[match['field']][0]
-                headers[index] = self.intersect(headers[index], match['value'])
+        headers = [
+            self.gen_bits(48),  # dl_dst
+            self.gen_bits(48),  # dl_src
+            self.gen_bits(16),  # dl_type
+            self.gen_bits(4),  # ip_version
+            self.gen_bits(4),  # ihl
+            self.gen_bits(8),  # diffserv
+            self.gen_bits(16),  # total_length
+            self.gen_bits(16),  # identification
+            self.gen_bits(3),  # flags
+            self.gen_bits(13),  # frag
+            self.gen_bits(8),  # ttl
+            self.gen_bits(8),  # protocol
+            self.gen_bits(16),  # checksum
+            self.gen_bits(32),  # nw_src
+            self.gen_bits(32),  # nw_dst
+            self.gen_bits(16),  # tcp_src
+            self.gen_bits(16),  # tcp_dst
+            self.gen_bits(16),  # tcp_length
+            self.gen_bits(16)  # tcp_checksum
+        ]
+        for match in rule['matches']:
+            index = header_map[match['field']][0]
+            headers[index] = self.intersect(headers[index], match['value'])
 
-            rule['space'] = ''.join(headers)
+        rule['space'] = ''.join(headers)
+
+    # build space bits from rules. eg. nw_src=2,nw_dst=3 => ...**10**...**11**...
+    def build_space(self):
+        for rule in self.rules:
+            self.build_space_for_rule(rule)
 
     @staticmethod
     def intersect(space1, space2):

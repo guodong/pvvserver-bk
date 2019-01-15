@@ -6,11 +6,12 @@ from mininet.cli import CLI
 from mininet.log import setLogLevel
 import json
 
+TOPO_FILE = 'topo-add-rule.json'
 
 def network():
     net = Mininet()
     net.addController('c0', controller=RemoteController)
-    with open('topo.json', 'r') as f:
+    with open(TOPO_FILE, 'r') as f:
         data = f.read()
         topo = json.loads(data)
         for node in topo['nodes']:
