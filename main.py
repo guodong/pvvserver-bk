@@ -9,7 +9,7 @@ from space import Space
 BUF_SIZE = 4096
 PORT = 9999
 TRIGGER_PORT = 8888
-#TOPO_FILE = 'topo-add-rule.json'
+# TOPO_FILE = 'topo-add-rule.json'
 TOPO_FILE = 'topo.json'
 
 # PM for one protocol
@@ -51,6 +51,7 @@ class Node:
 
             for node in topo['nodes']:
                 if node['name'] == self.name:
+                    self.ip = node['ip']
                     self.rules = node['rules']
                     self.build_space()
                     # print self.rules
@@ -121,6 +122,8 @@ class Node:
                 self.unicast(json.dumps(msg), self.get_node_by_name(data.split(':')[3])['ip'])
 
 
+            print 'trigger end: %d' % int(time.time() * 1000000)
+
     def get_node_by_ip(self, ip):
         for node in self.topo['nodes']:
             if node['ip'] == ip:
@@ -134,6 +137,9 @@ class Node:
         server.bind(ip_port)
         while True:
             data, client = server.recvfrom(BUF_SIZE)
+            if client[0] == self.ip:  # ignore broadcast from myself
+                continue
+
             print 'starttime: %d' % int(time.time() * 1000000)
             print('recv: ', len(data), client[0], data)
             msg = json.loads(data)
@@ -186,6 +192,11 @@ class Node:
         client.sendto(msg, (ip, PORT))
 
     def flood(self, msg, except_ip = None):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.sendto(msg, ('255.255.255.255', PORT))
+        return
+
         neighbor_ips = self.get_neighbor_ips()
         if except_ip is not None:
             neighbor_ips.remove(except_ip)

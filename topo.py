@@ -16,14 +16,18 @@ def network():
         topo = json.loads(data)
         for node in topo['nodes']:
             print node['name']
-            h = net.addHost('r' + node['name'], ip=node['ip'])
-            s = net.addSwitch(node['name'], cls=OVSSwitch)
+            h = net.addHost(str('r' + node['name']), ip=node['ip'])  # must add str(), see https://github.com/mininet/mininet/issues/724
+            s = net.addSwitch(str(node['name']), cls=OVSSwitch)
             net.addLink(h, s)
 
         for link in topo['links']:
-            net.addLink(net.getNodeByName(link['src']), net.getNodeByName(link['dst']), cls=TCLink, bw=100)
+            # net.addLink(net.getNodeByName(link['src']), net.getNodeByName(link['dst']), cls=TCLink, bw=100)
+            net.addLink(net.getNodeByName(link['src']), net.getNodeByName(link['dst']))
 
         net.start()
+        for host in net.hosts:
+            host.cmd('ip route add default via 1.1.1.1')
+
         CLI(net)
         net.stop()
 
